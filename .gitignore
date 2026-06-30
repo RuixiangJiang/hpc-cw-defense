@@ -1,0 +1,91 @@
+# --------------------------------------------------------------------
+# Build artifacts
+# --------------------------------------------------------------------
+objdir-*/
+objdir-*/**
+
+firmware/**/objdir-*/
+firmware/**/objdir-*/**
+
+*.elf
+*.hex
+*.map
+*.bin
+*.lss
+*.lst
+*.o
+*.d
+*.a
+*.out
+*.su
+*.sym
+
+# --------------------------------------------------------------------
+# Temporary / backup files
+# --------------------------------------------------------------------
+*.orig
+*.bak
+*.backup
+*.backup-*
+*.tmp
+*~
+.#*
+
+# --------------------------------------------------------------------
+# Python
+# --------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+.venv/
+venv/
+.env
+
+# --------------------------------------------------------------------
+# Logs and experiment outputs
+# --------------------------------------------------------------------
+*.log
+
+data/raw/*
+data/processed/*
+results/figures/*
+results/tables/*
+results/reports/*
+
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!results/figures/.gitkeep
+!results/tables/.gitkeep
+!results/reports/.gitkeep
+
+# --------------------------------------------------------------------
+# OS / editor
+# --------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+.vscode/
+.idea/
+
+# --------------------------------------------------------------------
+# ChipWhisperer local captures / traces
+# --------------------------------------------------------------------
+*.cwp
+*.npy
+*.npz
+*.traces
+*.trace
+
+
+# --------------------------------------------------------------------
+# Third-party source trees
+# --------------------------------------------------------------------
+third_party/chipwhisperer/
+third_party/pqm4/
+
+!third_party/README.md

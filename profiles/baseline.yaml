@@ -1,0 +1,13 @@
+name: kyber51290s_baseline
+board: CWLITEARM_STM32F3
+crypto: kyber512-90s
+implementation: m4fspeed
+
+attack:
+  enabled: false
+  macro:
+    ATTACK_DECODER_SKIP_QHALF: 0
+
+notes: >
+  Baseline Kyber512-90s decapsulation with the decoder hook compiled in
+  but disabled.

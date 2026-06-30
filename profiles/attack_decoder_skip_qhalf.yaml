@@ -1,0 +1,17 @@
+name: kyber51290s_decoder_skip_qhalf
+board: CWLITEARM_STM32F3
+crypto: kyber512-90s
+implementation: m4fspeed
+
+attack:
+  enabled: true
+  type: source_level_instruction_skip
+  target_function: poly_tomsg
+  skipped_operation: add_KYBER_Q_half
+  macro:
+    ATTACK_DECODER_SKIP_QHALF: 1
+    ATTACK_TARGET_COEFF: 0
+
+notes: >
+  Deterministic software model of the Kyber decoder skip fault.
+  The first version attacks one selected coefficient per decapsulation.

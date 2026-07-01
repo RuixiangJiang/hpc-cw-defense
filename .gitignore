@@ -80,10 +80,3 @@ Thumbs.db
 *.npz
 *.traces
 *.trace
-
-
-# --------------------------------------------------------------------
-# Third-party source trees
-# --------------------------------------------------------------------
-third_party/chipwhisperer/
-# third_party/pqm4/

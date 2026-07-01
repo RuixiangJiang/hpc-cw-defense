@@ -198,6 +198,9 @@ def read_status(target, timeout: float, verbose: bool = True) -> Tuple[bytes, di
         "crypto_bytes": payload[8],
         "ct_len": payload[9] | (payload[10] << 8),
         "pk_len": payload[11] | (payload[12] << 8),
+        "decode_defense_error": payload[13],
+        "decode_dup_mismatches": payload[14],
+        "decode_full_mismatches": payload[15],
     }
 
     return payload, status
@@ -277,7 +280,10 @@ def run_one_trial(target, args, trial_id: int) -> bool:
     ss_dec = d_payload[1:]
 
     if d_ret != 0:
-        raise RuntimeError(f"Decapsulation failed with return code {d_ret}")
+        if args.allow_defense_fail and d_ret == 0xFD:
+            print("[ok] decapsulation rejected by DecodeMessage defense")
+        else:
+            raise RuntimeError(f"Decapsulation failed with return code {d_ret}")
 
     if len(ss_dec) != SS_LEN:
         raise RuntimeError(f"Unexpected ss_dec length: {len(ss_dec)}")
@@ -291,6 +297,14 @@ def run_one_trial(target, args, trial_id: int) -> bool:
         verbose=args.verbose_packets,
     )
 
+    if args.expect_defense_error is not None:
+        got = 1 if status["decode_defense_error"] != 0 else 0
+        if got != args.expect_defense_error:
+            raise RuntimeError(
+                f"Unexpected decode_defense_error: expected "
+                f"{args.expect_defense_error}, got {status['decode_defense_error']}"
+            )
+
     print("[result]")
     print(f"  status_raw       : {status_raw.hex()}")
     print(f"  keygen_ret       : {status['keygen_ret']}")
@@ -301,6 +315,9 @@ def run_one_trial(target, args, trial_id: int) -> bool:
     print(f"  fault_skips      : {status['fault_skips']}")
     print(f"  ss_enc           : {ss_enc.hex()}")
     print(f"  ss_dec           : {ss_dec.hex()}")
+    print(f"  decode_error     : {status['decode_defense_error']}")
+    print(f"  dup_mismatches   : {status['decode_dup_mismatches']}")
+    print(f"  full_mismatches  : {status['decode_full_mismatches']}")
 
     if args.expected_fault_skips is not None:
         if status["fault_skips"] != args.expected_fault_skips:
@@ -409,6 +426,18 @@ def parse_args():
         "--verbose-packets",
         action="store_true",
         help="Print every SimpleSerial packet response.",
+    )
+    parser.add_argument(
+        "--allow-defense-fail",
+        action="store_true",
+        help="Allow D command to return 0xFD when DecodeMessage defense fires.",
+    )
+    parser.add_argument(
+        "--expect-defense-error",
+        type=int,
+        choices=[0, 1],
+        default=None,
+        help="Expected nonzero DecodeMessage defense error flag.",
     )
 
     return parser.parse_args()

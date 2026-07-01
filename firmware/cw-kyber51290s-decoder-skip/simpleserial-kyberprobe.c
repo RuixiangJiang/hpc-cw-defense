@@ -97,6 +97,19 @@
 #define PROBE_FAULT_TRIGGER_LOW()  do { } while (0)
 #endif
 
+extern volatile unsigned int hpc_cw_decode_entries;
+extern volatile unsigned int hpc_cw_decode_exits;
+extern volatile unsigned int hpc_cw_decode_progress;
+extern volatile unsigned int hpc_cw_decode_expected;
+extern volatile unsigned int hpc_cw_decode_defense_error;
+extern volatile unsigned int hpc_cw_decode_dup_checks;
+extern volatile unsigned int hpc_cw_decode_dup_mismatches;
+extern volatile unsigned int hpc_cw_decode_full_mismatches;
+extern volatile unsigned int hpc_cw_decode_last_marker;
+extern volatile unsigned int hpc_cw_decode_marker_count;
+extern volatile unsigned int hpc_cw_decode_qhalf_token;
+extern volatile unsigned int hpc_cw_decode_qhalf_expected;
+
 static uint8_t pk[CRYPTO_PUBLICKEYBYTES];
 static uint8_t sk[CRYPTO_SECRETKEYBYTES];
 static uint8_t ct[CRYPTO_CIPHERTEXTBYTES];
@@ -208,6 +221,20 @@ static uint8_t cmd_encaps_probe(uint8_t *buf, uint8_t len)
     last_enc_ret = crypto_kem_enc(ct, ss_enc, pk);
     PROBE_ENCAP_TRIGGER_LOW();
 
+    if (hpc_cw_decode_defense_error != 0u) {
+        /*
+        * Defense policy:
+        *   - detect DecodeMessage tampering;
+        *   - reject the decapsulation result;
+        *   - prevent the manipulated shared secret from being used.
+        */
+        last_dec_ret = 0xFD;
+
+        for (int i = 0; i < CRYPTO_BYTES; i++) {
+            ss_dec[i] = 0;
+        }
+    }
+
     out[0] = (uint8_t)last_enc_ret;
     memcpy(out + 1, ss_enc, CRYPTO_BYTES);
 
@@ -231,6 +258,19 @@ static uint8_t cmd_decaps_probe(uint8_t *buf, uint8_t len)
     uint8_t out[1 + CRYPTO_BYTES];
 
     hpc_cw_fault_skips = 0;
+
+    hpc_cw_decode_entries = 0;
+    hpc_cw_decode_exits = 0;
+    hpc_cw_decode_progress = 0;
+    hpc_cw_decode_expected = 256;
+    hpc_cw_decode_defense_error = 0;
+    hpc_cw_decode_dup_checks = 0;
+    hpc_cw_decode_dup_mismatches = 0;
+    hpc_cw_decode_full_mismatches = 0;
+    hpc_cw_decode_last_marker = 0;
+    hpc_cw_decode_marker_count = 0;
+    hpc_cw_decode_qhalf_token = 0;
+    hpc_cw_decode_qhalf_expected = 0;
 
     PROBE_DECAP_FULL_TRIGGER_HIGH();
     last_dec_ret = crypto_kem_dec(ss_dec, ct, sk);
@@ -448,9 +488,9 @@ static uint8_t cmd_status(uint8_t *buf, uint8_t len)
     out[11] = (uint8_t)(CRYPTO_PUBLICKEYBYTES & 0xff);
     out[12] = (uint8_t)((CRYPTO_PUBLICKEYBYTES >> 8) & 0xff);
 
-    out[13] = 0;
-    out[14] = 0;
-    out[15] = 0;
+    out[13] = (uint8_t)(hpc_cw_decode_defense_error & 0xff);
+    out[14] = (uint8_t)(hpc_cw_decode_dup_mismatches & 0xff);
+    out[15] = (uint8_t)(hpc_cw_decode_full_mismatches & 0xff);
 
     simpleserial_put('H', sizeof(out), out);
     return 0x00;

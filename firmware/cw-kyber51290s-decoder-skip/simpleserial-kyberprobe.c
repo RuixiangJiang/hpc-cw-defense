@@ -6,6 +6,10 @@
 #include <stddef.h>
 #include <string.h>
 
+#ifndef ATTACK_TARGET_COEFF
+#define ATTACK_TARGET_COEFF 0
+#endif
+
 /*
  * ChipWhisperer Kyber512-90s probe firmware.
  *
@@ -107,8 +111,23 @@ extern volatile unsigned int hpc_cw_decode_dup_mismatches;
 extern volatile unsigned int hpc_cw_decode_full_mismatches;
 extern volatile unsigned int hpc_cw_decode_last_marker;
 extern volatile unsigned int hpc_cw_decode_marker_count;
-extern volatile unsigned int hpc_cw_decode_qhalf_token;
-extern volatile unsigned int hpc_cw_decode_qhalf_expected;
+
+extern volatile unsigned int hpc_hw_available;
+extern volatile unsigned int hpc_hw_ctrl;
+extern volatile unsigned int hpc_hw_anomaly;
+
+extern volatile unsigned int hpc_hw_decode_cycles;
+extern volatile unsigned int hpc_hw_decode_cpi;
+extern volatile unsigned int hpc_hw_decode_exc;
+extern volatile unsigned int hpc_hw_decode_sleep;
+extern volatile unsigned int hpc_hw_decode_lsu;
+extern volatile unsigned int hpc_hw_decode_fold;
+
+extern volatile unsigned int hpc_hw_coeff_cycles_sum;
+extern volatile unsigned int hpc_hw_coeff_cycles_min;
+extern volatile unsigned int hpc_hw_coeff_cycles_max;
+extern volatile unsigned int hpc_hw_target_coeff_cycles;
+extern volatile unsigned int hpc_hw_target_coeff_idx;
 
 static uint8_t pk[CRYPTO_PUBLICKEYBYTES];
 static uint8_t sk[CRYPTO_SECRETKEYBYTES];
@@ -269,8 +288,19 @@ static uint8_t cmd_decaps_probe(uint8_t *buf, uint8_t len)
     hpc_cw_decode_full_mismatches = 0;
     hpc_cw_decode_last_marker = 0;
     hpc_cw_decode_marker_count = 0;
-    hpc_cw_decode_qhalf_token = 0;
-    hpc_cw_decode_qhalf_expected = 0;
+
+    hpc_hw_anomaly = 0;
+    hpc_hw_decode_cycles = 0;
+    hpc_hw_decode_cpi = 0;
+    hpc_hw_decode_exc = 0;
+    hpc_hw_decode_sleep = 0;
+    hpc_hw_decode_lsu = 0;
+    hpc_hw_decode_fold = 0;
+    hpc_hw_coeff_cycles_sum = 0;
+    hpc_hw_coeff_cycles_min = 0xffffffffu;
+    hpc_hw_coeff_cycles_max = 0;
+    hpc_hw_target_coeff_cycles = 0;
+    hpc_hw_target_coeff_idx = ATTACK_TARGET_COEFF;
 
     PROBE_DECAP_FULL_TRIGGER_HIGH();
     last_dec_ret = crypto_kem_dec(ss_dec, ct, sk);
@@ -284,6 +314,64 @@ static uint8_t cmd_decaps_probe(uint8_t *buf, uint8_t len)
      * command D returns response command S.
      */
     simpleserial_put('S', sizeof(out), out);
+    return 0x00;
+}
+
+static void put_u32le(uint8_t *out, unsigned int offset, unsigned int x)
+{
+    out[offset + 0] = (uint8_t)(x & 0xffu);
+    out[offset + 1] = (uint8_t)((x >> 8) & 0xffu);
+    out[offset + 2] = (uint8_t)((x >> 16) & 0xffu);
+    out[offset + 3] = (uint8_t)((x >> 24) & 0xffu);
+}
+
+#if SS_VER == SS_VER_2_1
+static uint8_t cmd_hpc_hw_status(uint8_t cmd, uint8_t scmd, uint8_t len, uint8_t *buf)
+#else
+static uint8_t cmd_hpc_hw_status(uint8_t *buf, uint8_t len)
+#endif
+{
+#if SS_VER == SS_VER_2_1
+    (void)cmd;
+    (void)scmd;
+#endif
+    (void)len;
+    (void)buf;
+
+    uint8_t out[32];
+
+    /*
+     * Eight 32-bit words:
+     *
+     * word0: hpc_hw_available
+     * word1: hpc_hw_anomaly
+     * word2: DecodeMessage region cycles, DWT_CYCCNT
+     * word3: packed event counters:
+     *        byte0 CPICNT
+     *        byte1 EXCCNT
+     *        byte2 LSUCNT
+     *        byte3 FOLDCNT
+     * word4: target coefficient cycles
+     * word5: min coefficient cycles
+     * word6: max coefficient cycles
+     * word7: sum coefficient cycles
+     */
+    put_u32le(out, 0,  hpc_hw_available);
+    put_u32le(out, 4,  hpc_hw_anomaly);
+    put_u32le(out, 8,  hpc_hw_decode_cycles);
+
+    put_u32le(out, 12,
+        (hpc_hw_decode_cpi & 0xffu)
+        | ((hpc_hw_decode_exc & 0xffu) << 8)
+        | ((hpc_hw_decode_lsu & 0xffu) << 16)
+        | ((hpc_hw_decode_fold & 0xffu) << 24));
+
+    put_u32le(out, 16, hpc_hw_target_coeff_cycles);
+    put_u32le(out, 20, hpc_hw_coeff_cycles_min);
+    put_u32le(out, 24, hpc_hw_coeff_cycles_max);
+    put_u32le(out, 28, hpc_hw_coeff_cycles_sum);
+
+    simpleserial_put('Y', sizeof(out), out);
     return 0x00;
 }
 
@@ -582,6 +670,7 @@ int main(void)
     simpleserial_addcmd('M', 0, cmd_debug_decode_msg);
     simpleserial_addcmd('Z', 3, cmd_read_indcpa_sk_chunk);
     simpleserial_addcmd('H', 0, cmd_status);
+    simpleserial_addcmd('Y', 0, cmd_hpc_hw_status);
 
 #if KYBERPROBE_BOOT_BANNER
     uart_puts("rKYBERPROBE_C\n");

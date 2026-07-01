@@ -205,6 +205,40 @@ def read_status(target, timeout: float, verbose: bool = True) -> Tuple[bytes, di
 
     return payload, status
 
+def read_hpc_hw(target, timeout: float, verbose: bool = True) -> dict:
+    payload = send_cmd_read(
+        target,
+        cmd="Y",
+        response_cmd="Y",
+        response_len=32,
+        timeout=timeout,
+        payload=b"",
+        verbose=verbose,
+    )
+
+    words = [
+        int.from_bytes(payload[i:i + 4], "little")
+        for i in range(0, 32, 4)
+    ]
+
+    packed_events = words[3]
+
+    info = {
+        "hpc_hw_available": words[0],
+        "hpc_hw_anomaly": words[1],
+        "decode_cycles": words[2],
+        "decode_cpi": packed_events & 0xff,
+        "decode_exc": (packed_events >> 8) & 0xff,
+        "decode_lsu": (packed_events >> 16) & 0xff,
+        "decode_fold": (packed_events >> 24) & 0xff,
+        "target_coeff_cycles": words[4],
+        "coeff_cycles_min": words[5],
+        "coeff_cycles_max": words[6],
+        "coeff_cycles_sum": words[7],
+    }
+
+    return info
+
 
 def run_one_trial(target, args, trial_id: int) -> bool:
     print(f"\n===== Trial {trial_id} =====")
@@ -304,6 +338,29 @@ def run_one_trial(target, args, trial_id: int) -> bool:
                 f"Unexpected decode_defense_error: expected "
                 f"{args.expect_defense_error}, got {status['decode_defense_error']}"
             )
+    
+    hpc_hw = None
+
+    if args.read_hpc_hw:
+        print("[test] hardware DWT counters")
+        hpc_hw = read_hpc_hw(
+            target,
+            timeout=args.timeout,
+            verbose=args.verbose_packets,
+        )
+
+        print("[hpc-hw]")
+        print(f"  available           : {hpc_hw['hpc_hw_available']}")
+        print(f"  anomaly             : {hpc_hw['hpc_hw_anomaly']}")
+        print(f"  decode_cycles       : {hpc_hw['decode_cycles']}")
+        print(f"  decode_cpi          : {hpc_hw['decode_cpi']}")
+        print(f"  decode_exc          : {hpc_hw['decode_exc']}")
+        print(f"  decode_lsu          : {hpc_hw['decode_lsu']}")
+        print(f"  decode_fold         : {hpc_hw['decode_fold']}")
+        print(f"  target_coeff_cycles : {hpc_hw['target_coeff_cycles']}")
+        print(f"  coeff_cycles_min    : {hpc_hw['coeff_cycles_min']}")
+        print(f"  coeff_cycles_max    : {hpc_hw['coeff_cycles_max']}")
+        print(f"  coeff_cycles_sum    : {hpc_hw['coeff_cycles_sum']}")
 
     print("[result]")
     print(f"  status_raw       : {status_raw.hex()}")
@@ -438,6 +495,11 @@ def parse_args():
         choices=[0, 1],
         default=None,
         help="Expected nonzero DecodeMessage defense error flag.",
+    )
+    parser.add_argument(
+        "--read-hpc-hw",
+        action="store_true",
+        help="Read hardware DWT counters via Y command after decapsulation.",
     )
 
     return parser.parse_args()

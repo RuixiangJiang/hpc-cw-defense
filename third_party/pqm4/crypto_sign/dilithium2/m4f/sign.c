@@ -8,6 +8,14 @@
 #include "symmetric.h"
 #include "smallpoly.h"
 
+#ifndef PQM4_EXP_EXPLOITING_DETERMINISM_IN_LATTICE_BASED_SIGNATURES
+#define PQM4_EXP_EXPLOITING_DETERMINISM_IN_LATTICE_BASED_SIGNATURES 0
+#endif
+
+#if PQM4_EXP_EXPLOITING_DETERMINISM_IN_LATTICE_BASED_SIGNATURES
+#include "ravi_z_generation_fault.inc"
+#endif
+
 /*************************************************
 * Name:        crypto_sign_keypair
 *
@@ -153,7 +161,12 @@ rej:
   /* Compute z, reject if it reveals secret */
   polyvecl_small_basemul_invntt(&z, &cp_small, &cp_small_prime, s1_prime);
 
+#if PQM4_EXP_EXPLOITING_DETERMINISM_IN_LATTICE_BASED_SIGNATURES
+  ravi_z_generation_apply(&z, &y);
+#else
   polyvecl_add(&z, &z, &y);
+#endif
+
   polyvecl_reduce(&z);
   if(polyvecl_chknorm(&z, GAMMA1 - BETA))
     goto rej;

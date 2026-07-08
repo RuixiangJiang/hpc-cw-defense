@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/exp_env.sh"
+
+cd "$FW_APP_DIR"
+rm -rf "objdir-$PLATFORM"
+rm -f ./*.elf ./*.hex ./*.map ./*.lss ./*.lst ./*.sym
+
+EXTRA_CFLAGS_SINGLEBIN="-DHPC_HW_ENABLE=1 \
+-DFIDDLING_HPC_TARGET_CYCLES_MIN=${FIDDLING_HPC_TARGET_CYCLES_MIN} \
+-DFIDDLING_HPC_TARGET_CYCLES_MAX=${FIDDLING_HPC_TARGET_CYCLES_MAX}"
+
+make TARGET="$TARGET_NAME" \
+     PLATFORM="$PLATFORM" \
+     SS_VER="$SS_VER" \
+     CRYPTO_TARGET=NONE \
+     EXTRA_CFLAGS="$EXTRA_CFLAGS_SINGLEBIN" \
+     "${TARGET_NAME}-${PLATFORM}.hex" \
+     2>&1 | tee build_fiddling_singlebin.log
+
+cd "$REPO_ROOT"
+
+python3 "$TEST_SCRIPT" \
+  --hex "$HEX_PATH" \
+  --label "fiddling-${MODEL}-j${TARGET_J}" \
+  --baud "$BAUD" \
+  --trials "$TRIALS" \
+  --model "$MODEL" \
+  --target-j "$TARGET_J" \
+  --twiddle-index "$TWIDDLE_INDEX" \
+  --wrong-index "$WRONG_INDEX" \
+  --fault-value "$FAULT_VALUE" \
+  --expected-faults 1 \
+  --read-target \
+  --read-hpc-hw \
+  --verbose-packets

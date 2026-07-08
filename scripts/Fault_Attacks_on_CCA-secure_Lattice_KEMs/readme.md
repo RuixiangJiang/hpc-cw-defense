@@ -1,20 +1,54 @@
-# Coefficient-level DWT hardware counter monitoring
+# Fault Attacks on CCA-secure Lattice KEMs: single-coefficient DecodeMessage fault simulation with DWT hardware counters
 
-This section documents how the current Kyber DecodeMessage defense uses Cortex-M DWT hardware counters to monitor one selected coefficient.
+This directory contains the ChipWhisperer/Cortex-M experiment for the Kyber part of **Fault Attacks on CCA-secure Lattice KEMs**.
+
+The experiment emulates a single-coefficient DecodeMessage fault in Kyber decapsulation and uses the Cortex-M DWT hardware performance counter (`DWT_CYCCNT`) to detect the resulting coefficient-level cycle-count deviation.
+
+The current implementation uses a **single firmware binary** for both baseline and attack trials. Baseline/attack mode is selected at runtime through SimpleSerial, not by compiling two different binaries.
 
 ---
 
-## How the DWT hardware counter monitors one DecodeMessage coefficient
+## Files
 
-The current defense monitors the execution cost of a selected DecodeMessage coefficient using the Cortex-M DWT hardware cycle counter.
+Important files:
 
-The monitored coefficient is selected at compile time:
+```text
+scripts/Fault_Attacks_on_CCA-secure_Lattice_KEMs/
+├── run_base.sh
+├── run_attack_coeff.sh
+├── run_cycle_stats_20.sh
+├── test_kyberprobe_upload_ct_dec.py
+└── readme.md
 
-```bash
--DATTACK_TARGET_COEFF=0
+firmware/cw-kyber51290s-decoder-skip/
+└── simpleserial-kyberprobe.c
+
+third_party/pqm4/crypto_kem/kyber512-90s/m4fspeed/
+├── poly.c
+└── poly_decode_hpc.inc
 ```
 
-For example, `ATTACK_TARGET_COEFF=0` means the first coefficient decoded by `poly_tomsg()`:
+The experiment-specific Kyber DecodeMessage modification is gated by:
+
+```bash
+-DPQM4_EXP_FAULT_ATTACKS_ON_CCA_SECURE_LATTICE_KEMS=1
+```
+
+If this macro is not set, the normal pqm4 Kyber implementation should be used.
+
+---
+
+## Fault model
+
+### Normal DecodeMessage operation
+
+In Kyber `poly_tomsg()`, each message bit is decoded from one polynomial coefficient. The normal coefficient-level decoding primitive is:
+
+```c
+t = ((((x << 1) + KYBER_Q / 2) / KYBER_Q) & 1);
+```
+
+In this experiment, the monitored coefficient index is the flattened index:
 
 ```c
 coeff_idx = 8 * i + j;
@@ -23,195 +57,153 @@ coeff_idx = 8 * i + j;
 Therefore:
 
 ```text
-ATTACK_TARGET_COEFF = 0  =>  i = 0, j = 0
-ATTACK_TARGET_COEFF = 17 =>  i = 2, j = 1
+target_coeff = 0  =>  i = 0, j = 0
+target_coeff = 1  =>  i = 0, j = 1
+target_coeff = 17 =>  i = 2, j = 1
 ```
 
----
+### Faulted DecodeMessage primitive
 
-## Per-coefficient DWT measurement
-
-Inside `poly_tomsg()`, each coefficient decode is wrapped by DWT cycle-counter reads:
+The software-emulated faulted primitive skips the `+ KYBER_Q / 2` term for exactly one selected coefficient:
 
 ```c
-for (i = 0; i < KYBER_SYMBYTES; i++) {
-    msg[i] = 0;
-
-    for (j = 0; j < 8; j++) {
-        unsigned int coeff_idx = (unsigned int)(8 * i + j);
-        uint32_t coeff_cycle_start;
-
-        coeff_cycle_start = hpc_hw_coeff_begin();
-
-        t = hpc_cw_decode_round_faultable(a->coeffs[coeff_idx], coeff_idx);
-
-        hpc_hw_coeff_end(coeff_idx, coeff_cycle_start);
-
-        msg[i] |= t << j;
-
-        hpc_cw_decode_coeff_progress(coeff_idx);
-    }
-}
+t = (((x << 1) / KYBER_Q) & 1);
 ```
 
-The monitored operation is the DecodeMessage rounding step:
-
-```c
-t = hpc_cw_decode_round_faultable(a->coeffs[coeff_idx], coeff_idx);
-```
-
-The DWT cycle counter is read before and after this operation. The cycle difference is then recorded.
-
----
-
-## DWT cycle read helpers
-
-The coefficient measurement uses `DWT_CYCCNT`:
-
-```c
-static inline uint32_t hpc_hw_coeff_begin(void)
-{
-#if HPC_HW_ENABLE
-    return HPC_HW_DWT_CYCCNT;
-#else
-    return 0;
-#endif
-}
-
-static inline void hpc_hw_coeff_end(unsigned int coeff_idx, uint32_t start)
-{
-#if HPC_HW_ENABLE
-    uint32_t delta;
-
-    if ((hpc_hw_available & 0x01u) == 0u) {
-        return;
-    }
-
-    delta = HPC_HW_DWT_CYCCNT - start;
-
-    hpc_hw_coeff_cycles_sum += delta;
-
-    if (delta < hpc_hw_coeff_cycles_min) {
-        hpc_hw_coeff_cycles_min = delta;
-    }
-
-    if (delta > hpc_hw_coeff_cycles_max) {
-        hpc_hw_coeff_cycles_max = delta;
-    }
-
-    if ((int)coeff_idx == ATTACK_TARGET_COEFF) {
-        hpc_hw_target_coeff_cycles = delta;
-    }
-#else
-    (void)coeff_idx;
-    (void)start;
-#endif
-}
-```
-
-The important value is:
-
-```c
-hpc_hw_target_coeff_cycles
-```
-
-This stores the measured DWT cycle count for the selected coefficient.
-
----
-
-## Single-coefficient attack model
-
-The source-level attack skips `+ KYBER_Q / 2` for only one coefficient:
+The normal and faulted primitives are both compiled into the same firmware image:
 
 ```c
 __attribute__((noinline))
-static uint16_t hpc_cw_decode_round_faultable(int32_t x, unsigned int coeff_idx)
+static uint16_t hpc_cw_decode_round_normal(int32_t x)
 {
-#if ATTACK_DECODER_SKIP_QHALF
-    if ((int)coeff_idx == ATTACK_TARGET_COEFF) {
-        hpc_cw_fault_skips++;
-        return ((x << 1) / KYBER_Q) & 1;
-    }
-#endif
+    return (uint16_t)((((x << 1) + KYBER_Q / 2) / KYBER_Q) & 1);
+}
 
-    return (((x << 1) + KYBER_Q / 2) / KYBER_Q) & 1;
+__attribute__((noinline))
+static uint16_t hpc_cw_decode_round_faulted_no_qhalf(int32_t x)
+{
+    return (uint16_t)(((x << 1) / KYBER_Q) & 1);
 }
 ```
 
-With:
-
-```bash
--DATTACK_DECODER_SKIP_QHALF=1
--DATTACK_TARGET_COEFF=0
-```
-
-only coefficient `0` is affected. The expected status is:
-
-```text
-fault_skips = 1
-```
-
-This means the experiment is not skipping all 256 coefficients. It is a single-coefficient DecodeMessage skip model.
-
 ---
 
-## Hardware-counter threshold
+## Prefix-target-suffix simulation structure
 
-The defense compares the selected coefficient's cycle count against a compile-time threshold.
+Earlier versions used an `if` inside every coefficient decode to decide whether the current coefficient was the target. That polluted the cycle measurement because the attack path included extra branch and bookkeeping logic.
 
-Example threshold:
-
-```bash
--DHPC_HW_TARGET_COEFF_CYCLES_MAX=24
-```
-
-Detection rule:
+The current version avoids that by splitting the flattened coefficient traversal into three parts:
 
 ```text
-if target_coeff_cycles > 24:
-    hpc_hw_anomaly |= HPC_HW_ERR_TARGET_CYCLES_HIGH
-    decode_error   |= HPC_CW_DECERR_HW_COUNTER
+prefix:  coefficients before target_coeff are decoded normally
+target:  only target_coeff is decoded normally or faulted depending on runtime mode
+suffix:  coefficients after target_coeff are decoded normally
 ```
 
-The corresponding implementation is:
+Conceptually:
 
 ```c
-#if HPC_HW_TARGET_COEFF_CYCLES_MAX
-    if (hpc_hw_target_coeff_cycles > HPC_HW_TARGET_COEFF_CYCLES_MAX) {
-        hpc_hw_anomaly |= HPC_HW_ERR_TARGET_CYCLES_HIGH;
+if (target_coeff < ncoeff) {
+    for (coeff_idx = 0; coeff_idx < target_coeff; coeff_idx++) {
+        normal_decode(coeff_idx);
     }
-#endif
 
-if (hpc_hw_anomaly != 0u) {
-    hpc_cw_decode_defense_error |= HPC_CW_DECERR_HW_COUNTER;
+    if (attack_enable) {
+        faulted_decode(target_coeff);
+    } else {
+        normal_decode(target_coeff);
+    }
+
+    for (coeff_idx = target_coeff + 1; coeff_idx < ncoeff; coeff_idx++) {
+        normal_decode(coeff_idx);
+    }
 }
 ```
 
-The expected hardware-counter detection result is:
-
-```text
-decode_error   = 64
-hpc_hw_anomaly = 16
-```
-
-where:
-
-```text
-64 = 0x40 = HPC_CW_DECERR_HW_COUNTER
-16 = 0x10 = HPC_HW_ERR_TARGET_CYCLES_HIGH
-```
+This preserves the target position while avoiding an additional target-check branch in every loop iteration.
 
 ---
 
-## Reading the measured values
+## Runtime baseline/attack selection
 
-The firmware exposes the DWT hardware-counter snapshot through the `Y` SimpleSerial command.
+Baseline and attack use the same firmware binary. The runtime mode is controlled by these global variables in `poly_decode_hpc.inc`:
 
-The Python test script reads it with:
+```c
+volatile unsigned int hpc_cw_attack_enable = 0;
+volatile unsigned int hpc_cw_attack_target_coeff = 0;
+```
+
+The SimpleSerial wrapper configures them using the `F` command:
+
+```text
+F payload:
+  byte 0 = attack_enable
+           0 -> baseline mode
+           1 -> attack mode
+
+  byte 1 = target_coeff
+           0..255
+```
+
+The Python test script exposes this through:
 
 ```bash
---read-hpc-hw
+--attack-enable 0      # baseline
+--attack-enable 1      # attack
+--target-coeff 0       # selected coefficient
 ```
+
+For example:
+
+```bash
+--attack-enable 0 --target-coeff 0
+```
+
+runs baseline mode for coefficient 0, while:
+
+```bash
+--attack-enable 1 --target-coeff 0
+```
+
+runs the single-coefficient faulted mode for coefficient 0.
+
+---
+
+## DWT hardware counter measurement
+
+The experiment uses the Cortex-M DWT hardware cycle counter:
+
+```text
+DWT_CYCCNT
+```
+
+The firmware also exposes several additional DWT profiling counters for observation:
+
+```text
+DWT_CPICNT
+DWT_EXCCNT
+DWT_LSUCNT
+DWT_FOLDCNT
+```
+
+The key detector field is:
+
+```text
+target_coeff_cycles
+```
+
+This is the measured cycle count of the selected target coefficient.
+
+The firmware also records:
+
+```text
+decode_cycles       whole DecodeMessage region cycles
+coeff_cycles_min    minimum per-coefficient cycle count among all 256 coefficients
+coeff_cycles_max    maximum per-coefficient cycle count among all 256 coefficients
+coeff_cycles_sum    sum of all 256 per-coefficient cycle counts
+```
+
+The Python script reads the hardware-counter snapshot through the `Y` SimpleSerial command when `--read-hpc-hw` is passed.
 
 Example output:
 
@@ -219,26 +211,172 @@ Example output:
 [hpc-hw]
   available           : 3
   anomaly             : 0
-  decode_cycles       : 15938
-  decode_cpi          : 92
-  decode_exc          : 0
-  decode_lsu          : 77
-  decode_fold         : 0
-  target_coeff_cycles : 20
-  coeff_cycles_min    : 20
-  coeff_cycles_max    : 20
-  coeff_cycles_sum    : 5120
-```
-
-The key field for coefficient-level detection is:
-
-```text
-target_coeff_cycles
+  decode_cycles       : ...
+  decode_cpi          : ...
+  decode_exc          : ...
+  decode_lsu          : ...
+  decode_fold         : ...
+  target_coeff_cycles : ...
+  coeff_cycles_min    : ...
+  coeff_cycles_max    : ...
+  coeff_cycles_sum    : ...
 ```
 
 ---
 
-## Running the baseline
+## Calibration and threshold computation
+
+Let \(x_i\) be the measured fault-free target coefficient cycle count in the \(i\)-th calibration run.
+
+The baseline mean and sample standard deviation are:
+
+```text
+mu_R    = mean(x_i)
+sigma_R = sample_stdev(x_i)
+```
+
+Given a confidence parameter \(\lambda\), the calibrated acceptance envelope is:
+
+```text
+tau_R^- = mu_R - lambda * sigma_R
+tau_R^+ = mu_R + lambda * sigma_R
+```
+
+The detector accepts an execution only if:
+
+```text
+tau_R^- <= target_coeff_cycles <= tau_R^+
+```
+
+It rejects an execution when the target coefficient cycle count is below the lower bound or above the upper bound.
+
+### Current calibration result
+
+In the current single-binary experiment, 20 baseline runs produced:
+
+```text
+baseline target_coeff_cycles = 25 for every run
+```
+
+Therefore:
+
+```text
+mu_R    = 25
+sigma_R = 0
+```
+
+For any finite confidence parameter \(\lambda\):
+
+```text
+tau_R^- = 25
+tau_R^+ = 25
+```
+
+The corresponding compile-time thresholds are:
+
+```bash
+-DHPC_HW_TARGET_COEFF_CYCLES_MIN=25
+-DHPC_HW_TARGET_COEFF_CYCLES_MAX=25
+```
+
+For the current attack, the target coefficient is measured at 24 cycles, so it is rejected by the lower bound:
+
+```text
+24 < tau_R^- = 25
+```
+
+For this specific experiment, the lower bound alone is enough to detect the attack:
+
+```bash
+-DHPC_HW_TARGET_COEFF_CYCLES_MIN=25
+```
+
+However, the two-sided envelope is the more general detector form.
+
+---
+
+## Current experimental result
+
+### Baseline mode
+
+In baseline mode:
+
+```bash
+--attack-enable 0 --target-coeff 0
+```
+
+all 256 coefficients use the normal DecodeMessage primitive.
+
+Observed coefficient-level result:
+
+```text
+coeff_cycles_min = 25
+coeff_cycles_max = 25
+coeff_cycles_sum = 6400 = 25 * 256
+target_coeff_cycles = 25
+fault_skips = 0
+```
+
+Expected detector result:
+
+```text
+hpc_hw_anomaly = 0
+decode_error   = 0
+```
+
+### Attack mode
+
+In attack mode:
+
+```bash
+--attack-enable 1 --target-coeff 0
+```
+
+only the selected target coefficient uses the faulted DecodeMessage primitive. All other coefficients use the normal primitive.
+
+Observed coefficient-level result:
+
+```text
+coeff_cycles_min = 24
+coeff_cycles_max = 25
+coeff_cycles_sum = 6399 = 25 * 255 + 24
+target_coeff_cycles = 24
+fault_skips = 1
+```
+
+This confirms that the experiment faults exactly one coefficient.
+
+With the calibrated lower bound:
+
+```bash
+-DHPC_HW_TARGET_COEFF_CYCLES_MIN=25
+```
+
+the attack is rejected because:
+
+```text
+target_coeff_cycles = 24 < 25
+```
+
+Expected detector result:
+
+```text
+hpc_hw_anomaly = 8
+decode_error   = 64
+```
+
+The values are bit flags:
+
+```text
+8  = 0x08 = HPC_HW_ERR_TARGET_CYCLES_LOW
+64 = 0x40 = HPC_CW_DECERR_HW_COUNTER
+```
+
+---
+
+## Building and running
+
+### Baseline
 
 ```bash
 cd ~/hpc-cw-defense/scripts/Fault_Attacks_on_CCA-secure_Lattice_KEMs
@@ -249,15 +387,13 @@ Expected result:
 
 ```text
 fault_skips       = 0
-decode_error      = 0
-hpc_hw_anomaly    = 0
 target_ss_match   = 1
 host_ss_match     = 1
+hpc_hw_anomaly    = 0
+decode_error      = 0
 ```
 
----
-
-## Running the single-coefficient attack
+### Attack
 
 ```bash
 cd ~/hpc-cw-defense/scripts/Fault_Attacks_on_CCA-secure_Lattice_KEMs
@@ -268,42 +404,106 @@ Expected result:
 
 ```text
 fault_skips       = 1
+hpc_hw_anomaly    = 8
 decode_error      = 64
-hpc_hw_anomaly    = 16
 ```
 
----
-
-## Testing another coefficient
-
-To monitor and attack another coefficient:
+### Repeated trials
 
 ```bash
+TRIALS=20 ./run_base.sh
+TRIALS=20 ./run_attack_coeff.sh
+```
+
+### Testing another coefficient
+
+```bash
+TARGET_COEFF=17 ./run_base.sh
 TARGET_COEFF=17 ./run_attack_coeff.sh
 ```
 
-This compiles the firmware with:
+The target coefficient is selected at runtime through SimpleSerial, so this does not require compiling a separate attack binary.
+
+---
+
+## Direct use of the Python test script
+
+Baseline mode:
 
 ```bash
--DATTACK_TARGET_COEFF=17
+cd ~/hpc-cw-defense
+
+python3 scripts/Fault_Attacks_on_CCA-secure_Lattice_KEMs/test_kyberprobe_upload_ct_dec.py \
+  --hex firmware/cw-kyber51290s-decoder-skip/cw-kyber51290s-decoder-skip-singlebin-hwdef-CWLITEARM.hex \
+  --label singlebin-hwdef-baseline-coeff0 \
+  --attack-enable 0 \
+  --target-coeff 0 \
+  --expected-fault-skips 0 \
+  --expect-ss-match 1 \
+  --expect-defense-error 0 \
+  --read-hpc-hw
 ```
 
-If the cycle distribution changes for another coefficient, recalibrate the threshold:
+Attack mode:
 
 ```bash
-HPC_HW_TARGET_COEFF_CYCLES_MAX=26 TARGET_COEFF=17 ./run_attack_coeff.sh
+cd ~/hpc-cw-defense
+
+python3 scripts/Fault_Attacks_on_CCA-secure_Lattice_KEMs/test_kyberprobe_upload_ct_dec.py \
+  --hex firmware/cw-kyber51290s-decoder-skip/cw-kyber51290s-decoder-skip-singlebin-hwdef-CWLITEARM.hex \
+  --no-program \
+  --label singlebin-hwdef-attack-coeff0 \
+  --attack-enable 1 \
+  --target-coeff 0 \
+  --expected-fault-skips 1 \
+  --allow-defense-fail \
+  --expect-defense-error 1 \
+  --read-hpc-hw
 ```
 
 ---
 
-## Interpretation note
+## Observation mode
 
-This is a hardware-counter defense against the current source-level single-coefficient decoder-skip model. It uses real Cortex-M DWT hardware counters, but the injected skip itself is still implemented at source level with a conditional branch.
+To observe cycle counts without triggering the detector, compile or run with thresholds disabled:
 
-This result should be reported as:
-
-```text
-DWT hardware counters detect the implemented single-coefficient source-level decoder-skip model.
+```bash
+HPC_HW_TARGET_COEFF_CYCLES_MIN=0 \
+HPC_HW_TARGET_COEFF_CYCLES_MAX=0 \
+./run_base.sh
 ```
 
-It should not be overclaimed as proof that DWT counters always detect a physical clock-glitch instruction skip. For a real physical glitch, the cycle direction may differ and the threshold must be recalibrated from measured traces.
+For attack observation, remove the `--expect-defense-error 1` check or run the Python script directly without that argument:
+
+```bash
+python3 scripts/Fault_Attacks_on_CCA-secure_Lattice_KEMs/test_kyberprobe_upload_ct_dec.py \
+  --hex firmware/cw-kyber51290s-decoder-skip/cw-kyber51290s-decoder-skip-singlebin-hwdef-CWLITEARM.hex \
+  --label observe-attack-coeff0 \
+  --attack-enable 1 \
+  --target-coeff 0 \
+  --expected-fault-skips 1 \
+  --allow-defense-fail \
+  --read-hpc-hw
+```
+
+---
+
+## Interpretation
+
+This experiment validates the instrumentation and detection path for a controlled source-level single-coefficient DecodeMessage fault simulation.
+
+It should be reported as:
+
+```text
+DWT hardware counters detect the implemented single-coefficient source-level DecodeMessage fault simulation.
+```
+
+It should not be overclaimed as proof that DWT counters always detect a physical clock-glitch or EMFI instruction skip. In a physical fault-injection experiment, the target instruction and timing behavior may differ. The detector should therefore be recalibrated from measured fault-free and faulted traces on the actual device.
+
+For a physical experiment, the recommended detector remains a calibrated two-sided envelope:
+
+```text
+tau_R^- <= target_coeff_cycles <= tau_R^+
+```
+
+where the bounds are computed from device-specific calibration traces rather than copied from this source-level simulation.

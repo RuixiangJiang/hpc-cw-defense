@@ -526,29 +526,6 @@ tau_R^+ = 10
 
 ---
 
-## Suggested paper wording
-
-```latex
-For the Number-Not-Used-Once experiment, we model the fault as a skipped
-nonce-update instruction rather than as a direct overwrite of the sampler input.
-The monitored target operation is the update primitive that increments the
-nonce state before the target sampling call. In the fault-free execution, all
-eight update operations take 10 cycles, giving a total update cost of
-\(80 = 10 \times 8\) cycles. When the update before call 4 is skipped, the
-target update cost drops to 9 cycles and the total update cost becomes
-\(79 = 10 \times 7 + 9\), confirming that exactly one update operation is
-affected.
-
-The semantic checker independently observes that call 4 receives nonce 3
-instead of the expected nonce 4 and identifies call 3 as the duplicate nonce
-source. Since the suffix nonce sequence is shifted by the skipped update, four
-nonce-progression violations are reported. Thus, the attack is detected both by
-the DWT target-update counter and by the nonce-progression monitor, while the
-sampler itself remains unmodified.
-```
-
----
-
 ## Limitations
 
 This experiment validates a source-level software simulation of a skipped

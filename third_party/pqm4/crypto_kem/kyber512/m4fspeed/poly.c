@@ -559,7 +559,25 @@ void poly_frommsg(poly *r, const unsigned char msg[KYBER_SYMBYTES]) {
 * Arguments:   - unsigned char *msg: pointer to output message
 *              - const poly *a:      pointer to input polynomial
 **************************************************/
+#if PQM4_EXP_FAULT_ATTACKS_ON_CCA_SECURE_LATTICE_KEMS
 #include "poly_decode_hpc.inc"
+#else
+void poly_tomsg(unsigned char msg[KYBER_SYMBYTES], poly *a)
+{
+  uint16_t t;
+  int i,j;
+
+  for(i=0;i<KYBER_SYMBYTES;i++)
+  {
+    msg[i] = 0;
+    for(j=0;j<8;j++)
+    {
+      t = (((a->coeffs[8*i+j] << 1) + KYBER_Q/2) / KYBER_Q) & 1;
+      msg[i] |= t << j;
+    }
+  }
+}
+#endif
 
 
 /*************************************************

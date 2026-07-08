@@ -15,6 +15,8 @@
  *   - Cortex-M DWT_FOLDCNT  : 8-bit folded instruction counter
  *
  * Detection policy:
+ *   - build one firmware image containing both baseline and faulted decoders;
+ *   - switch baseline/attack at runtime through hpc_cw_attack_enable;
  *   - build once with thresholds disabled to observe baseline/attack values;
  *   - then set HPC_HW_TARGET_COEFF_CYCLES_MIN / MAX or region thresholds.
  */
@@ -25,6 +27,24 @@
 
 #ifndef ATTACK_TARGET_COEFF
 #define ATTACK_TARGET_COEFF 0
+#endif
+
+/*
+ * Runtime attack control.
+ *
+ * To compare baseline and attack without changing the firmware binary,
+ * compile both normal and faulted DecodeMessage primitives into the same
+ * image and select the mode at runtime.
+ *
+ *   hpc_cw_attack_enable = 0: baseline mode
+ *   hpc_cw_attack_enable = 1: attack mode
+ *
+ * ATTACK_TARGET_COEFF is still used as the default target coefficient, but
+ * hpc_cw_attack_target_coeff may be changed by the SimpleSerial wrapper if
+ * desired.
+ */
+#ifndef HPC_CW_ATTACK_ENABLE_DEFAULT
+#define HPC_CW_ATTACK_ENABLE_DEFAULT 0
 #endif
 
 #ifndef DEFENSE_DUP_SELECTED
@@ -97,6 +117,19 @@
 /* Existing attack/debug status. */
 volatile unsigned int hpc_cw_fault_skips = 0;
 
+/*
+ * Runtime attack configuration.
+ *
+ * These variables allow baseline and attack trials to use the same firmware
+ * binary. The host-side SimpleSerial wrapper should set hpc_cw_attack_enable
+ * before decapsulation:
+ *
+ *   0 -> decode the target coefficient normally
+ *   1 -> decode the target coefficient with the faulted primitive
+ */
+volatile unsigned int hpc_cw_attack_enable = HPC_CW_ATTACK_ENABLE_DEFAULT;
+volatile unsigned int hpc_cw_attack_target_coeff = 0;
+
 /* DecodeMessage software state, only for region/progress/status reporting. */
 volatile unsigned int hpc_cw_decode_entries = 0;
 volatile unsigned int hpc_cw_decode_exits = 0;
@@ -125,7 +158,7 @@ volatile unsigned int hpc_hw_coeff_cycles_sum = 0;
 volatile unsigned int hpc_hw_coeff_cycles_min = 0xffffffffu;
 volatile unsigned int hpc_hw_coeff_cycles_max = 0;
 volatile unsigned int hpc_hw_target_coeff_cycles = 0;
-volatile unsigned int hpc_hw_target_coeff_idx = ATTACK_TARGET_COEFF;
+volatile unsigned int hpc_hw_target_coeff_idx = 0;
 
 static unsigned int hpc_hw_start_cyccnt;
 static uint8_t hpc_hw_start_cpicnt;
@@ -169,7 +202,6 @@ static inline void hpc_hw_dwt_enable(void)
     hpc_hw_available = 0;
 
     if ((ctrl & HPC_HW_DWT_CTRL_NOCYCCNT) == 0u) {
-        HPC_HW_DWT_CYCCNT = 0;
         HPC_HW_DWT_CTRL |= HPC_HW_DWT_CTRL_CYCCNTENA;
         hpc_hw_available |= 0x01u;
     }
@@ -216,14 +248,13 @@ static inline void hpc_hw_region_begin(void)
     hpc_hw_coeff_cycles_min = 0xffffffffu;
     hpc_hw_coeff_cycles_max = 0;
     hpc_hw_target_coeff_cycles = 0;
-    hpc_hw_target_coeff_idx = ATTACK_TARGET_COEFF;
+    hpc_hw_target_coeff_idx = hpc_cw_attack_target_coeff;
 
     if ((hpc_hw_available & 0x01u) == 0u) {
         hpc_hw_anomaly |= HPC_HW_ERR_DWT_UNAVAILABLE;
         return;
     }
 
-    HPC_HW_DWT_CYCCNT = 0;
     HPC_HW_DWT_CPICNT = 0;
     HPC_HW_DWT_EXCCNT = 0;
     HPC_HW_DWT_SLEEPCNT = 0;
@@ -308,20 +339,32 @@ static inline void hpc_hw_region_end(void)
 static inline uint32_t hpc_hw_coeff_begin(void)
 {
 #if HPC_HW_ENABLE
+    __asm volatile("" ::: "memory");
     return HPC_HW_DWT_CYCCNT;
 #else
     return 0;
 #endif
 }
 
-static inline void hpc_hw_coeff_end(unsigned int coeff_idx, uint32_t start)
+/*
+ * Common end-of-measurement helper for every coefficient.
+ *
+ * The target coefficient is no longer measured through a separate target-only
+ * wrapper. This helper only computes and accumulates the delta. The caller
+ * decides whether the returned delta should also be copied into
+ * hpc_hw_target_coeff_cycles.
+ */
+static inline uint32_t hpc_hw_coeff_end_common(unsigned int coeff_idx,
+                                               uint32_t start)
 {
 #if HPC_HW_ENABLE
     uint32_t delta;
 
     if ((hpc_hw_available & 0x01u) == 0u) {
-        return;
+        return 0;
     }
+
+    __asm volatile("" ::: "memory");
 
     delta = HPC_HW_DWT_CYCCNT - start;
 
@@ -335,12 +378,12 @@ static inline void hpc_hw_coeff_end(unsigned int coeff_idx, uint32_t start)
         hpc_hw_coeff_cycles_max = delta;
     }
 
-    if ((int)coeff_idx == ATTACK_TARGET_COEFF) {
-        hpc_hw_target_coeff_cycles = delta;
-    }
+    (void)coeff_idx;
+    return delta;
 #else
     (void)coeff_idx;
     (void)start;
+    return 0;
 #endif
 }
 
@@ -348,7 +391,7 @@ static inline void hpc_cw_decode_enter(void)
 {
     hpc_cw_decode_entries++;
     hpc_cw_decode_progress = 0;
-    hpc_cw_decode_expected = 256;
+    hpc_cw_decode_expected = KYBER_SYMBYTES * 8u;
     hpc_cw_decode_marker(0xD1u);
 }
 
@@ -372,21 +415,31 @@ static inline void hpc_cw_decode_exit(void)
 }
 
 /*
- * Primary path. The simulated attack skips +KYBER_Q/2 for ATTACK_TARGET_COEFF.
- * Detection is not based on a software qhalf token. It is based on DWT
- * hardware cycle counters and configured thresholds.
+ * DecodeMessage coefficient primitives.
+ *
+ * Baseline and attack use the same firmware binary. The firmware contains
+ * both primitives:
+ *
+ *   - hpc_cw_decode_round_normal():
+ *       normal Kyber DecodeMessage rounding
+ *
+ *   - hpc_cw_decode_round_faulted_no_qhalf():
+ *       faulted rounding with the (+ KYBER_Q / 2) term skipped
+ *
+ * Runtime mode selection chooses which primitive is used only for the selected
+ * target coefficient. The target selection branch is outside the prefix/suffix
+ * loops and outside the measured primitive window.
  */
 __attribute__((noinline))
-static uint16_t hpc_cw_decode_round_faultable(int32_t x, unsigned int coeff_idx)
+static uint16_t hpc_cw_decode_round_normal(int32_t x)
 {
-#if ATTACK_DECODER_SKIP_QHALF
-    if ((int)coeff_idx == ATTACK_TARGET_COEFF) {
-        hpc_cw_fault_skips++;
-        return ((x << 1) / KYBER_Q) & 1;
-    }
-#endif
+    return (uint16_t)((((x << 1) + KYBER_Q / 2) / KYBER_Q) & 1);
+}
 
-    return (((x << 1) + KYBER_Q / 2) / KYBER_Q) & 1;
+__attribute__((noinline))
+static uint16_t hpc_cw_decode_round_faulted_no_qhalf(int32_t x)
+{
+    return (uint16_t)(((x << 1) / KYBER_Q) & 1);
 }
 
 /*
@@ -408,10 +461,6 @@ static uint16_t hpc_cw_decode_round_reference(int32_t x)
 static inline int hpc_cw_decode_should_duplicate(unsigned int coeff_idx)
 {
 #if DEFENSE_DUP_SELECTED
-    if ((int)coeff_idx == ATTACK_TARGET_COEFF) {
-        return 1;
-    }
-
     if ((coeff_idx % DEFENSE_DUP_STRIDE) == 0u) {
         return 1;
     }
@@ -422,47 +471,187 @@ static inline int hpc_cw_decode_should_duplicate(unsigned int coeff_idx)
     return 0;
 }
 
-void poly_tomsg(unsigned char msg[KYBER_SYMBYTES], poly *a)
+static inline void hpc_cw_msg_or_bit(unsigned char msg[KYBER_SYMBYTES],
+                                     unsigned int coeff_idx,
+                                     uint16_t t)
+{
+    unsigned int byte_idx = coeff_idx >> 3;
+    unsigned int bit_idx = coeff_idx & 7u;
+
+    msg[byte_idx] |= (unsigned char)(t << bit_idx);
+}
+
+static inline void hpc_cw_decode_maybe_check_duplicate(uint16_t t,
+                                                       int32_t x,
+                                                       unsigned int coeff_idx,
+                                                       int force_check)
+{
+#if DEFENSE_DUP_SELECTED
+    if (force_check || hpc_cw_decode_should_duplicate(coeff_idx)) {
+        uint16_t tref = hpc_cw_decode_round_reference(x);
+
+        hpc_cw_decode_dup_checks++;
+
+        if (t != tref) {
+            hpc_cw_decode_dup_mismatches++;
+            hpc_cw_decode_defense_error |= HPC_CW_DECERR_DUP_MISMATCH;
+        }
+    }
+#else
+    (void)t;
+    (void)x;
+    (void)coeff_idx;
+    (void)force_check;
+#endif
+}
+
+/*
+ * Unified measured normal coefficient decode.
+ *
+ * Every normal coefficient, including the runtime-selected target coefficient
+ * in baseline mode, goes through this exact same function body. This avoids
+ * the previous target-only wrapper artifact where target_coeff_cycles could
+ * be measured as only the counter-read overhead.
+ */
+__attribute__((noinline))
+static uint32_t hpc_cw_decode_one_normal_measured(unsigned char msg[KYBER_SYMBYTES],
+                                                  poly *a,
+                                                  unsigned int coeff_idx,
+                                                  int force_dup_check)
 {
     uint16_t t;
+    uint32_t coeff_cycle_start;
+    uint32_t delta;
+
+    __asm volatile("" ::: "memory");
+
+    coeff_cycle_start = hpc_hw_coeff_begin();
+
+    __asm volatile("" ::: "memory");
+
+    t = hpc_cw_decode_round_normal(a->coeffs[coeff_idx]);
+
+    __asm volatile("" ::: "memory");
+
+    delta = hpc_hw_coeff_end_common(coeff_idx, coeff_cycle_start);
+
+    hpc_cw_decode_maybe_check_duplicate(
+        t,
+        a->coeffs[coeff_idx],
+        coeff_idx,
+        force_dup_check
+    );
+
+    hpc_cw_msg_or_bit(msg, coeff_idx, t);
+    hpc_cw_decode_coeff_progress(coeff_idx);
+
+    return delta;
+}
+
+/*
+ * Unified measured faulted target coefficient decode.
+ *
+ * Only the selected target coefficient in attack mode goes through this
+ * function. The hpc_cw_fault_skips bookkeeping happens after the measured
+ * primitive window.
+ */
+__attribute__((noinline))
+static uint32_t hpc_cw_decode_one_faulted_measured(unsigned char msg[KYBER_SYMBYTES],
+                                                   poly *a,
+                                                   unsigned int coeff_idx,
+                                                   int force_dup_check)
+{
+    uint16_t t;
+    uint32_t coeff_cycle_start;
+    uint32_t delta;
+
+    __asm volatile("" ::: "memory");
+
+    coeff_cycle_start = hpc_hw_coeff_begin();
+
+    __asm volatile("" ::: "memory");
+
+    t = hpc_cw_decode_round_faulted_no_qhalf(a->coeffs[coeff_idx]);
+
+    __asm volatile("" ::: "memory");
+
+    delta = hpc_hw_coeff_end_common(coeff_idx, coeff_cycle_start);
+
+    /*
+     * Keep the functional fault counter outside the measured primitive so
+     * target_coeff_cycles measures the faulted DecodeMessage primitive rather
+     * than the bookkeeping store.
+     */
+    hpc_cw_fault_skips++;
+
+    hpc_cw_decode_maybe_check_duplicate(
+        t,
+        a->coeffs[coeff_idx],
+        coeff_idx,
+        force_dup_check
+    );
+
+    hpc_cw_msg_or_bit(msg, coeff_idx, t);
+    hpc_cw_decode_coeff_progress(coeff_idx);
+
+    return delta;
+}
+
+void poly_tomsg(unsigned char msg[KYBER_SYMBYTES], poly *a)
+{
+    unsigned int coeff_idx;
+    unsigned int target_coeff = hpc_cw_attack_target_coeff;
+    const unsigned int ncoeff = (unsigned int)(KYBER_SYMBYTES * 8u);
+    int attack_enable;
     int i, j;
 
 #if DEFENSE_REDUNDANT_FULL
     unsigned char msg_ref[KYBER_SYMBYTES];
 #endif
 
+    for (i = 0; i < KYBER_SYMBYTES; i++) {
+        msg[i] = 0;
+    }
+
+    attack_enable = (hpc_cw_attack_enable != 0u);
+
     hpc_cw_decode_enter();
     hpc_hw_region_begin();
 
-    for (i = 0; i < KYBER_SYMBYTES; i++) {
-        msg[i] = 0;
+    /*
+     * Prefix-target-suffix DecodeMessage traversal.
+     *
+     * The target selection branch is outside the per-coefficient loops.
+     * Therefore the normal loop body does not contain:
+     *
+     *     if (coeff_idx == hpc_cw_attack_target_coeff)
+     *
+     * Baseline and attack are selected at runtime using the same firmware
+     * binary, but the measured target primitive itself contains no mode check.
+     */
+    if (target_coeff < ncoeff) {
+        for (coeff_idx = 0; coeff_idx < target_coeff; coeff_idx++) {
+            (void)hpc_cw_decode_one_normal_measured(msg, a, coeff_idx, 0);
+        }
 
-        for (j = 0; j < 8; j++) {
-            unsigned int coeff_idx = (unsigned int)(8 * i + j);
-            uint32_t coeff_cycle_start;
+        if (attack_enable) {
+            hpc_hw_target_coeff_cycles =
+                hpc_cw_decode_one_faulted_measured(msg, a, target_coeff, 1);
+        } else {
+            hpc_hw_target_coeff_cycles =
+                hpc_cw_decode_one_normal_measured(msg, a, target_coeff, 1);
+        }
 
-            coeff_cycle_start = hpc_hw_coeff_begin();
-
-            t = hpc_cw_decode_round_faultable(a->coeffs[coeff_idx], coeff_idx);
-
-            hpc_hw_coeff_end(coeff_idx, coeff_cycle_start);
-
-#if DEFENSE_DUP_SELECTED
-            if (hpc_cw_decode_should_duplicate(coeff_idx)) {
-                uint16_t tref = hpc_cw_decode_round_reference(a->coeffs[coeff_idx]);
-
-                hpc_cw_decode_dup_checks++;
-
-                if (t != tref) {
-                    hpc_cw_decode_dup_mismatches++;
-                    hpc_cw_decode_defense_error |= HPC_CW_DECERR_DUP_MISMATCH;
-                }
-            }
-#endif
-
-            msg[i] |= t << j;
-
-            hpc_cw_decode_coeff_progress(coeff_idx);
+        for (coeff_idx = target_coeff + 1u; coeff_idx < ncoeff; coeff_idx++) {
+            (void)hpc_cw_decode_one_normal_measured(msg, a, coeff_idx, 0);
+        }
+    } else {
+        /*
+         * Out-of-range target: no coefficient is faulted. This fallback keeps
+         * the function safe if the runtime target coefficient is misconfigured.
+         */
+        for (coeff_idx = 0; coeff_idx < ncoeff; coeff_idx++) {
+            (void)hpc_cw_decode_one_normal_measured(msg, a, coeff_idx, 0);
         }
     }
 
@@ -471,10 +660,10 @@ void poly_tomsg(unsigned char msg[KYBER_SYMBYTES], poly *a)
         msg_ref[i] = 0;
 
         for (j = 0; j < 8; j++) {
-            unsigned int coeff_idx = (unsigned int)(8 * i + j);
-            uint16_t tref = hpc_cw_decode_round_reference(a->coeffs[coeff_idx]);
+            unsigned int ref_coeff_idx = (unsigned int)(8 * i + j);
+            uint16_t tref = hpc_cw_decode_round_reference(a->coeffs[ref_coeff_idx]);
 
-            msg_ref[i] |= tref << j;
+            msg_ref[i] |= (unsigned char)(tref << j);
         }
     }
 

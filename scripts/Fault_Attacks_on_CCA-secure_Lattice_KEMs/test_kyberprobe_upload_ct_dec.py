@@ -242,6 +242,19 @@ def read_hpc_hw(target, timeout: float, verbose: bool = True) -> dict:
 
 def run_one_trial(target, args, trial_id: int) -> bool:
     print(f"\n===== Trial {trial_id} =====")
+    print("[test] configure runtime fault mode")
+    fault_cfg = configure_fault_mode(
+        target,
+        attack_enable=args.attack_enable,
+        target_coeff=args.target_coeff,
+        timeout=args.timeout,
+        verbose=args.verbose_packets,
+    )
+
+    print(
+        f"[fault-config] attack_enable={fault_cfg['attack_enable']} "
+        f"target_coeff={fault_cfg['target_coeff']}"
+    )
 
     print("[test] ping")
     p_payload = send_cmd_read(
@@ -401,6 +414,53 @@ def run_one_trial(target, args, trial_id: int) -> bool:
     return True
 
 
+def configure_fault_mode(
+    target,
+    attack_enable: int,
+    target_coeff: int,
+    timeout: float,
+    verbose: bool = True,
+) -> dict:
+    if attack_enable not in (0, 1):
+        raise ValueError(f"attack_enable must be 0 or 1, got {attack_enable}")
+
+    if not (0 <= target_coeff <= 255):
+        raise ValueError(f"target_coeff must be in [0, 255], got {target_coeff}")
+
+    payload = bytes([
+        attack_enable & 0x01,
+        target_coeff & 0xff,
+    ])
+
+    resp = send_cmd_read(
+        target,
+        cmd="F",
+        response_cmd="F",
+        response_len=4,
+        timeout=timeout,
+        payload=payload,
+        verbose=verbose,
+    )
+
+    status = {
+        "ret": resp[0],
+        "attack_enable": resp[1],
+        "target_coeff": resp[2],
+        "reserved": resp[3],
+    }
+
+    if status["ret"] != 0:
+        raise RuntimeError(f"fault config failed: {status}")
+
+    if status["attack_enable"] != attack_enable:
+        raise RuntimeError(f"fault config attack_enable mismatch: {status}")
+
+    if status["target_coeff"] != target_coeff:
+        raise RuntimeError(f"fault config target_coeff mismatch: {status}")
+
+    return status
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Test Kyber512-90s ChipWhisperer probe firmware."
@@ -500,6 +560,20 @@ def parse_args():
         "--read-hpc-hw",
         action="store_true",
         help="Read hardware DWT counters via Y command after decapsulation.",
+    )
+    parser.add_argument(
+        "--attack-enable",
+        type=int,
+        choices=[0, 1],
+        default=0,
+        help="Runtime fault mode: 0 = baseline, 1 = attack.",
+    )
+
+    parser.add_argument(
+        "--target-coeff",
+        type=int,
+        default=0,
+        help="Runtime target coefficient for the DecodeMessage fault.",
     )
 
     return parser.parse_args()

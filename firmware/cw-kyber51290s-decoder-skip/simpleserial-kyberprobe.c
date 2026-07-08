@@ -129,6 +129,9 @@ extern volatile unsigned int hpc_hw_coeff_cycles_max;
 extern volatile unsigned int hpc_hw_target_coeff_cycles;
 extern volatile unsigned int hpc_hw_target_coeff_idx;
 
+extern volatile unsigned int hpc_cw_attack_enable;
+extern volatile unsigned int hpc_cw_attack_target_coeff;
+
 static uint8_t pk[CRYPTO_PUBLICKEYBYTES];
 static uint8_t sk[CRYPTO_SECRETKEYBYTES];
 static uint8_t ct[CRYPTO_CIPHERTEXTBYTES];
@@ -177,6 +180,40 @@ static void fault_puts(const char *s)
     while (*s) {
         putch(*s++);
     }
+}
+
+#if SS_VER == SS_VER_2_1
+static uint8_t cmd_fault_config(uint8_t cmd, uint8_t scmd, uint8_t len, uint8_t *buf)
+#else
+static uint8_t cmd_fault_config(uint8_t *buf, uint8_t len)
+#endif
+{
+#if SS_VER == SS_VER_2_1
+    (void)cmd;
+    (void)scmd;
+#endif
+
+    uint8_t out[4];
+
+    if (len < 2) {
+        out[0] = 0xff;
+        out[1] = 0;
+        out[2] = 0;
+        out[3] = 0;
+        simpleserial_put('F', sizeof(out), out);
+        return 0x00;
+    }
+
+    hpc_cw_attack_enable = buf[0] ? 1u : 0u;
+    hpc_cw_attack_target_coeff = (unsigned int)buf[1];
+
+    out[0] = 0x00;
+    out[1] = (uint8_t)hpc_cw_attack_enable;
+    out[2] = (uint8_t)hpc_cw_attack_target_coeff;
+    out[3] = 0x00;
+
+    simpleserial_put('F', sizeof(out), out);
+    return 0x00;
 }
 
 #if SS_VER == SS_VER_2_1
@@ -300,7 +337,7 @@ static uint8_t cmd_decaps_probe(uint8_t *buf, uint8_t len)
     hpc_hw_coeff_cycles_min = 0xffffffffu;
     hpc_hw_coeff_cycles_max = 0;
     hpc_hw_target_coeff_cycles = 0;
-    hpc_hw_target_coeff_idx = ATTACK_TARGET_COEFF;
+    hpc_hw_target_coeff_idx = hpc_cw_attack_target_coeff;
 
     PROBE_DECAP_FULL_TRIGGER_HIGH();
     last_dec_ret = crypto_kem_dec(ss_dec, ct, sk);
@@ -659,6 +696,7 @@ int main(void)
     /*
      * Keep the known-good uppercase command convention.
      */
+    simpleserial_addcmd('F', 2, cmd_fault_config);
     simpleserial_addcmd('P', 0, cmd_ping);
     simpleserial_addcmd('K', 0, cmd_keypair_probe);
     simpleserial_addcmd('R', 3, cmd_read_pk);

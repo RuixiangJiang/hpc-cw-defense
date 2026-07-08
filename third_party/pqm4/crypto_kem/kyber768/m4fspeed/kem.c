@@ -5,6 +5,14 @@
 #include "symmetric.h"
 #include "verify.h"
 
+#ifndef PQM4_EXP_XAGAWA_FAILURE_HANDLING
+#define PQM4_EXP_XAGAWA_FAILURE_HANDLING 0
+#endif
+
+#if PQM4_EXP_XAGAWA_FAILURE_HANDLING
+#include "xagawa_failure_handling_fault.inc"
+#endif
+
 #include <stdlib.h>
 
 #include <stdlib.h>
@@ -92,7 +100,14 @@ int crypto_kem_dec(unsigned char *ss, const unsigned char *ct, const unsigned ch
 
     hash_h(kr + KYBER_SYMBYTES, ct, KYBER_CIPHERTEXTBYTES);                           /* overwrite coins in kr with H(c)  */
 
+#if PQM4_EXP_XAGAWA_FAILURE_HANDLING
+    xagawa_failure_handling_cmov_kr(kr,
+                                    sk + KYBER_SECRETKEYBYTES - KYBER_SYMBYTES,
+                                    KYBER_SYMBYTES,
+                                    fail);
+#else
     cmov(kr, sk + KYBER_SECRETKEYBYTES - KYBER_SYMBYTES, KYBER_SYMBYTES, fail);       /* Overwrite pre-k with z on re-encryption failure */
+#endif
 
     kdf(ss, kr, 2 * KYBER_SYMBYTES);                                                  /* hash concatenation of pre-k and H(c) to k */
     return 0;

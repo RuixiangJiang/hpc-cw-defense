@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-FW_APP_DIR="$REPO_ROOT/firmware/cw-dilithium-krahmer-skipcorr"
+FW_APP_DIR="$REPO_ROOT/firmware/cw-dilithium-krahmer"
 TEST_SCRIPT="$SCRIPT_DIR/test_krahmer_skipcorr.py"
 
 PLATFORM="${PLATFORM:-CWLITEARM}"
@@ -19,7 +19,7 @@ MESSAGE_TWEAK="${MESSAGE_TWEAK:-0}"
 KRAHMER_HPC_TARGET_CYCLES_MIN="${KRAHMER_HPC_TARGET_CYCLES_MIN:-0}"
 KRAHMER_HPC_TARGET_CYCLES_MAX="${KRAHMER_HPC_TARGET_CYCLES_MAX:-0}"
 
-TARGET_NAME="${TARGET_NAME:-cw-dilithium-krahmer-skipcorr-singlebin}"
+TARGET_NAME="${TARGET_NAME:-cw-dilithium-krahmer-singlebin}"
 HEX_PATH="$FW_APP_DIR/${TARGET_NAME}-${PLATFORM}.hex"
 
 export SCRIPT_DIR REPO_ROOT FW_APP_DIR TEST_SCRIPT

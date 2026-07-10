@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+FW_APP_DIR="$REPO_ROOT/firmware/cw-dilithium-du-breaking-shield"
+
+PLATFORM="${PLATFORM:-CWLITEARM}"
+SS_VER="${SS_VER:-SS_VER_2_1}"
+BAUD="${BAUD:-230400}"
+TRIALS="${TRIALS:-1}"
+
+TARGET_NAME="${TARGET_NAME:-cw-dilithium-du-breaking-shield-singlebin}"
+HEX_PATH="$FW_APP_DIR/${TARGET_NAME}-${PLATFORM}.hex"
+
+DU_HPC_TARGET_CYCLES_MIN="${DU_HPC_TARGET_CYCLES_MIN:-0}"
+DU_HPC_TARGET_CYCLES_MAX="${DU_HPC_TARGET_CYCLES_MAX:-0}"
+
+export SCRIPT_DIR REPO_ROOT FW_APP_DIR
+export PLATFORM SS_VER BAUD TRIALS TARGET_NAME HEX_PATH
+export DU_HPC_TARGET_CYCLES_MIN DU_HPC_TARGET_CYCLES_MAX
